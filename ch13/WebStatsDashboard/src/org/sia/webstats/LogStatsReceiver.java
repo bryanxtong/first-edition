@@ -1,18 +1,13 @@
 package org.sia.webstats;
 
+import java.time.Duration;
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.HashSet;
-import java.util.List;
-import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-import kafka.consumer.ConsumerConfig;
-import kafka.consumer.ConsumerIterator;
-import kafka.consumer.KafkaStream;
-import kafka.javaapi.consumer.ConsumerConnector;
+import org.apache.kafka.clients.consumer.*;
 
 /**
  * A thread for running a Kafka consumer, receiving messages and forwarding them to
@@ -27,7 +22,7 @@ import kafka.javaapi.consumer.ConsumerConnector;
 public class LogStatsReceiver extends Thread
 {
 	private static LogStatsReceiver instance;
-	private static Set<LogStatsObserver> listeners = Collections.synchronizedSet(new HashSet<LogStatsObserver>());
+	private static Set<LogStatsObserver> listeners = Collections.synchronizedSet(new HashSet<>());
 
 	private static void startUp()
 	{
@@ -71,18 +66,26 @@ public class LogStatsReceiver extends Thread
 		shouldStop.set(true);
 	}
 
-	private ConsumerConnector consumer;
+	private Consumer<String,String> consumer;
 
 	public void run()
 	{
 		try {
 			System.out.println("Starting LogStatsReceiver thread");
 
-			String zkaddress = System.getProperty("zookeeper.address");
+			/*String zkaddress = System.getProperty("zookeeper.address");
 
 			if(zkaddress == null)
 			{
 				System.err.println("zookeeper.address property is not set! Exiting.");
+				return;
+			}*/
+
+			String brokerList = System.getProperty("bootstrap.servers");
+
+			if(brokerList == null)
+			{
+				System.err.println("bootstrap.server property is not set! Exiting.");
 				return;
 			}
 
@@ -94,21 +97,22 @@ public class LogStatsReceiver extends Thread
 				return;
 			}
 
-			System.out.println("LogStatsReceiver params: "+zkaddress+", "+topicName);
+			System.out.println("LogStatsReceiver params: "+brokerList+", "+topicName);
 
 			Properties props = new Properties();
-	        props.put("zookeeper.connect", zkaddress);
+			props.put("bootstrap.servers", brokerList);
+			props.put("key.deserializer", "org.apache.kafka.common.serialization.StringDeserializer");
+			props.put("value.deserializer", "org.apache.kafka.common.serialization.StringDeserializer");
+			//props.put("zookeeper.connect", zkaddress);
 	        props.put("group.id", "groupname");
-	        props.put("zookeeper.session.timeout.ms", "2400");
-	        props.put("zookeeper.sync.time.ms", "1200");
+	        //props.put("zookeeper.session.timeout.ms", "2400");
+	        //props.put("zookeeper.sync.time.ms", "1200");
 	        props.put("auto.commit.interval.ms", "1000");
-
-	        ConsumerConfig config = new ConsumerConfig(props);
 
 	        System.out.println("LogStatsReceiver getting consumer");
 
 	        try {
-	        	consumer = kafka.consumer.Consumer.createJavaConsumerConnector(config);
+	        	consumer = new KafkaConsumer<>(props);
 	        }
 	        catch(Exception e)
 	        {
@@ -119,25 +123,23 @@ public class LogStatsReceiver extends Thread
 	        }
 
 	        System.out.println("LogStatsReceiver getting KafkaStream");
+			System.out.println("LogStatsReceiver iterating");
 
-			Map<String, Integer> topicCountMap = new HashMap<String, Integer>();
-	        topicCountMap.put(topicName, new Integer(1));
-	        Map<String, List<KafkaStream<byte[], byte[]>>> consumerMap = consumer.createMessageStreams(topicCountMap);
-	        KafkaStream<byte[], byte[]> stream = consumerMap.get(topicName).get(0);
-
-	        System.out.println("LogStatsReceiver iterating");
-
-	        ConsumerIterator<byte[], byte[]> it = stream.iterator();
-	        while (!shouldStop.get() && it.hasNext())
+			consumer.subscribe(Collections.singletonList(topicName));
+	        while (!shouldStop.get())
 	        {
-	        	String message = new String(it.next().message());
-	        	for(LogStatsObserver listener : listeners)
-	        	{
-	        		listener.onStatsMessage(message);
-	        	}
+				ConsumerRecords<String,String> records = consumer.poll(Duration.ofMillis(300));
+				if(!records.isEmpty()){
+					records.forEach(o -> {
+						String message = o.value();
+						for(LogStatsObserver listener : listeners) {
+							listener.onStatsMessage(message);
+						}
+					});
+				}
 	        }
 	        System.out.println("Stopping LogStatsReceiver.");
-	        consumer.shutdown();
+	        consumer.close();
 	        System.out.println("LogStatsReceiver stopped.");
 		}
 		catch(Exception e)
