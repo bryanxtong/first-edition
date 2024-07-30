@@ -6,9 +6,9 @@ import java.util.Random;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 
-import kafka.javaapi.producer.Producer;
-import kafka.producer.KeyedMessage;
-import kafka.producer.ProducerConfig;
+import org.apache.kafka.clients.producer.KafkaProducer;
+import org.apache.kafka.clients.producer.Producer;
+import org.apache.kafka.clients.producer.ProducerRecord;
 
 /**
  * Generates access logs by simulating user actions and sends the log lines to a Kafka topic. 
@@ -155,14 +155,13 @@ public class LogSimulator extends Thread
 		
 		Properties props = new Properties();
 		
-		props.put("metadata.broker.list", brokerList);
-		props.put("serializer.class", "kafka.serializer.StringEncoder");
+		props.put("bootstrap.servers", brokerList);
+		props.put("key.serializer", "org.apache.kafka.common.serialization.StringSerializer");
+		props.put("value.serializer", "org.apache.kafka.common.serialization.StringSerializer");
 		props.put("partitioner.class", "org.sia.logsimulator.IPPartitioner");
-		props.put("request.required.acks", "1");
-		
-		ProducerConfig config = new ProducerConfig(props);
-		
-        Producer<String, String> producer = new Producer<String, String>(config);
+		props.put("acks", "1");
+
+        Producer<String, String> producer = new KafkaProducer<>(props);
         
         long startTime = System.currentTimeMillis();
         
@@ -189,7 +188,7 @@ public class LogSimulator extends Thread
         		System.err.println(message);
         	
         	//send the message to Kafka
-        	KeyedMessage<String, String> data = new KeyedMessage<String, String>(TOPIC_NAME, ipAddress, message);
+        	ProducerRecord<String, String> data = new ProducerRecord<>(TOPIC_NAME, ipAddress, message);
             producer.send(data);
         	
             //wait for random think time
