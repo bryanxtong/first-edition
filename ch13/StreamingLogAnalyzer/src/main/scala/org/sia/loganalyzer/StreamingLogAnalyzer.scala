@@ -1,18 +1,13 @@
 package org.sia.loganalyzer
 
+import org.apache.kafka.clients.producer.{KafkaProducer, ProducerConfig, ProducerRecord}
+import org.apache.kafka.common.serialization.{StringDeserializer, StringSerializer}
 import org.apache.spark._
-import kafka.serializer.StringDecoder
-import kafka.producer.Producer
-import kafka.producer.KeyedMessage
-import kafka.producer.ProducerConfig
-import org.apache.spark.streaming.dstream.DStream
 import org.apache.spark.streaming._
-import StreamingContext._
-import org.apache.spark.streaming.kafka._
+import org.apache.spark.streaming.kafka010.{ConsumerStrategies, KafkaUtils, LocationStrategies}
 import java.text.SimpleDateFormat
-import java.text.DateFormat
-import scala.util.matching.Regex
 import java.util.Properties
+import scala.util.matching.Regex
 
 /**
  * Spark Streaming application for analyzing access logs coming as text messages from a Kafka topic,
@@ -69,21 +64,24 @@ object StreamingLogAnalyzer
     ssc.checkpoint(checkpointDir.get)
 
     //set up the receiving Kafka stream
-    println("Starting Kafka direct stream to broker list: "+brokerList.get)
-    val kafkaReceiverParams = Map[String, String](
-        "metadata.broker.list" -> brokerList.get)
+    println("Starting Kafka direct stream to broker list: " + brokerList.get)
+    val kafkaReceiverParams = Map[String, Object](
+      "bootstrap.servers" -> brokerList.get,
+      "key.deserializer" -> classOf[StringDeserializer],
+      "value.deserializer" -> classOf[StringDeserializer],
+      "group.id" -> "streamingLogsAnalyzer",
+      "auto.offset.reset" -> "latest",
+      "enable.auto.commit" -> (true: java.lang.Boolean)
+    )
     val kafkaStream = KafkaUtils.
-      createDirectStream[String, String, StringDecoder, StringDecoder](ssc, kafkaReceiverParams, Set(logsTopic.get))
-
-    //case class for storing the contents of each access log line
-    case class LogLine(time: Long, ipAddr: String, sessId: String, url: String, method: String, respCode: Int, respTime: Int)
+      createDirectStream[String, String](ssc, LocationStrategies.PreferConsistent, ConsumerStrategies.Subscribe[String, String](Set(logsTopic.get), kafkaReceiverParams))
 
     val df = new SimpleDateFormat("yyyy-MM-dd hh:mm:ss.SSS")
 
     //logStream contains parsed LogLines
     val logsStream = kafkaStream.flatMap { t =>
       {
-        val fields = t._2.split(" ")
+        val fields = t.value().split(" ")
         try {
           List(LogLine(df.parse(fields(0) + " " + fields(1)).getTime(), fields(2), fields(3), fields(4), fields(5), fields(6).toInt, fields(7).toInt))
         }
@@ -242,6 +240,8 @@ object StreamingLogAnalyzer
   }
 }//StreamingLogAnalyzer
 
+//case class for storing the contents of each access log line
+case class LogLine(time: Long, ipAddr: String, sessId: String, url: String, method: String, respCode: Int, respTime: Int)
 /**
  * Case class and the matching object for lazily initializing a Kafka Producer.
  */
@@ -249,13 +249,15 @@ case class KafkaProducerWrapper(brokerList: String)
 {
   val producerProps = {
     val prop = new Properties
-    prop.put("metadata.broker.list", brokerList)
+    prop.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, brokerList)
+    prop.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, classOf[StringSerializer])
+    prop.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, classOf[StringSerializer])
     prop
   }
-  val p = new Producer[Array[Byte], Array[Byte]](new ProducerConfig(producerProps))
+  val p = new KafkaProducer[String, String](producerProps)
 
   def send(topic: String, key: String, value: String) {
-    p.send(new KeyedMessage(topic, key.toCharArray.map(_.toByte), value.toCharArray.map(_.toByte)))
+    p.send(new ProducerRecord[String, String](topic, key, value))
   }
 }
 
